@@ -1,0 +1,18 @@
+{
+    "CLI01": {
+        "nombre": "Laura Peña",
+        "servicios": [
+            "Banca Móvil",
+            "Seguro",
+            "Ytmusic"
+        ],
+        "credito_aprobado": 5000.0
+    },
+    "CLI02": {
+        "nombre": "Roberto Gil",
+        "servicios": [
+            "Tarjeta Oro"
+        ],
+        "credito_aprobado": 2500.0
+    }
+}

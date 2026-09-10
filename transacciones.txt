@@ -1,0 +1,7 @@
+Nombre,Monto,Tipo
+Salario,1500.00,ingreso
+Supermercado,85.50,egreso
+Venta Monitor,120.00,ingreso
+Servicios,45.00,egreso
+Mantenimiento,60.00,egreso
+comer,200.00,egreso

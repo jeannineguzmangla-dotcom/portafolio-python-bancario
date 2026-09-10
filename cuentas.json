@@ -1,0 +1,10 @@
+{
+    "CTA-100": {
+        "titular": "Valeria Silva",
+        "saldo": 1300.0
+    },
+    "CTA-200": {
+        "titular": "Martín Castro",
+        "saldo": 1000.0
+    }
+}

@@ -1,0 +1,1 @@
+MOVIMIENTO: hola | MONTO: $200.00
