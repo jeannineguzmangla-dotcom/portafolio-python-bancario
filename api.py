@@ -1,3 +1,4 @@
+from servicios_externos import obtener_tasa_cambio
 from fastapi import FastAPI, HTTPException, status
 from pydantic import BaseModel, Field
 from banco import Banco
@@ -32,6 +33,17 @@ class TransferenciaSchema(BaseModel):
 
 class MontoOperacionSchema(BaseModel):
     monto: float = Field(..., gt=0.0, examples=[100.0])
+
+class TransferenciaInternacionalSchema(BaseModel):
+    cuenta_origen: str = Field(..., examples=["CTA-120"])
+    cuenta_destino: str = Field(..., examples=["CC-300"])
+    monto_origen: float = Field(..., gt=0.0, examples=[100.0])
+    moneda_origen: str = Field(
+        default="USD", min_length=3, max_length=3, examples=["USD"]
+    )
+    moneda_destino: str = Field(
+        default="EUR", min_length=3, max_length=3, examples=["EUR"]
+    )
 
 
 # ==========================================================
@@ -110,19 +122,89 @@ def registrar_nueva_cuenta(datos: CuentaCrearSchema):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
 
 
-@app.post("/transacciones/transferir", tags=["Transacciones"])
-def procesar_transferencia(datos: TransferenciaSchema):
-    """Ejecuta una transferencia atómica auditada entre dos cuentas."""
+@app.post(
+    "/transacciones/transferencia-internacional",
+    tags=["Microservicios Externos"],
+)
+async def procesar_transferencia_internacional(
+    datos: TransferenciaInternacionalSchema,
+):
+    """Ejecuta una transferencia multimoneda calculando el monto convertido en tiempo real."""
+    # 1. Obtener cotización externa
+    tasa = await obtener_tasa_cambio(datos.moneda_origen, datos.moneda_destino)
+    monto_convertido = round(datos.monto_origen * tasa, 2)
+
     try:
-        banco.transferir(datos.cuenta_origen, datos.cuenta_destino, datos.monto)
-        return {
-            "mensaje": "Transferencia ejecutada y asentada en la base de datos.",
-            "origen": datos.cuenta_origen,
-            "destino": datos.cuenta_destino,
-            "monto": datos.monto
-        }
+        # 2. Validar cuentas
+        origen = banco.obtener_cuenta(datos.cuenta_origen)
+        destino = banco.obtener_cuenta(datos.cuenta_destino)
+
+        # 3. Operaciones en memoria
+        origen.retirar(datos.monto_origen)
+        destino.depositar(monto_convertido)
     except ValueError as e:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail=str(e)
+        )
+
+    # 4. Persistencia relacional en base de datos
+    conexion = banco._conectar()
+    try:
+        cursor = conexion.cursor()
+        cursor.execute(
+            "UPDATE cuentas SET saldo = ? WHERE numero_cuenta = ?",
+            (origen.saldo, datos.cuenta_origen),
+        )
+        cursor.execute(
+            "UPDATE cuentas SET saldo = ? WHERE numero_cuenta = ?",
+            (destino.saldo, datos.cuenta_destino),
+        )
+
+        cursor.execute(
+            """
+            INSERT INTO movimientos (numero_cuenta, tipo_operacion, monto)
+            VALUES (?, ?, ?)
+        """,
+            (
+                datos.cuenta_origen,
+                f"ENVIO_INT_{datos.moneda_origen}_A_{datos.moneda_destino}",
+                datos.monto_origen,
+            ),
+        )
+
+        cursor.execute(
+            """
+            INSERT INTO movimientos (numero_cuenta, tipo_operacion, monto)
+            VALUES (?, ?, ?)
+        """,
+            (
+                datos.cuenta_destino,
+                f"RECEPCION_INT_TASA_{tasa}",
+                monto_convertido,
+            ),
+        )
+
+        conexion.commit()
+
+        return {
+            "estado": "completada",
+            "cuenta_origen": datos.cuenta_origen,
+            "monto_debitado": f"{datos.monto_origen:,.2f} {datos.moneda_origen.upper()}",
+            "tasa_aplicada": tasa,
+            "cuenta_destino": datos.cuenta_destino,
+            "monto_acreditado": f"{monto_convertido:,.2f} {datos.moneda_destino.upper()}",
+        }
+
+    except Exception as e:
+        conexion.rollback()
+        # Rollback en memoria si falla la BD
+        origen.saldo += datos.monto_origen
+        destino.saldo -= monto_convertido
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail=str(e)
+        )
+    finally:
+        conexion.close()
 
 
 @app.post("/operaciones/cierre-global", tags=["Administración"])
@@ -224,3 +306,92 @@ def consultar_movimientos_cuenta(numero_cuenta: str):
         "total_movimientos": len(historial),
         "movimientos": historial,
     }
+
+@app.get("/divisas/cotizacion", tags=["Microservicios Externos"])
+async def consultar_tipo_cambio(origen: str = "USD", destino: str = "EUR"):
+    """Consulta la tasa de conversión en tiempo real consumiendo una API externa."""
+    tasa = await obtener_tasa_cambio(origen, destino)
+    return {
+        "par": f"{origen.upper()}/{destino.upper()}",
+        "tasa": tasa,
+        "fuente": "European Central Bank via Frankfurter API",
+    }
+
+
+@app.post(
+    "/transacciones/transferencia-internacional",
+    tags=["Microservicios Externos"],
+)
+async def procesar_transferencia_internacional(
+    datos: TransferenciaInternacionalSchema,
+):
+    """Ejecuta una transferencia multimoneda calculando el monto convertido en tiempo real."""
+    # 1. Obtener cotización externa
+    tasa = await obtener_tasa_cambio(datos.moneda_origen, datos.moneda_destino)
+    monto_convertido = round(datos.monto_origen * tasa, 2)
+
+    # 2. Validar cuentas
+    origen = banco.obtener_cuenta(datos.cuenta_origen)
+    destino = banco.obtener_cuenta(datos.cuenta_destino)
+
+    # 3. Transacción atómica en memoria y base de datos
+    origen.retirar(datos.monto_origen)
+    destino.depositar(monto_convertido)
+
+    conexion = banco._conectar()
+    try:
+        cursor = conexion.cursor()
+        cursor.execute(
+            "UPDATE cuentas SET saldo = ? WHERE numero_cuenta = ?",
+            (origen.saldo, datos.cuenta_origen),
+        )
+        cursor.execute(
+            "UPDATE cuentas SET saldo = ? WHERE numero_cuenta = ?",
+            (destino.saldo, datos.cuenta_destino),
+        )
+
+        cursor.execute(
+            """
+            INSERT INTO movimientos (numero_cuenta, tipo_operacion, monto)
+            VALUES (?, ?, ?)
+        """,
+            (
+                datos.cuenta_origen,
+                f"ENVIO_INT_{datos.moneda_origen}_A_{datos.moneda_destino}",
+                datos.monto_origen,
+            ),
+        )
+
+        cursor.execute(
+            """
+            INSERT INTO movimientos (numero_cuenta, tipo_operacion, monto)
+            VALUES (?, ?, ?)
+        """,
+            (
+                datos.cuenta_destino,
+                f"RECEPCION_INT_TASA_{tasa}",
+                monto_convertido,
+            ),
+        )
+
+        conexion.commit()
+
+        return {
+            "estado": "completada",
+            "cuenta_origen": datos.cuenta_origen,
+            "monto_debitado": f"{datos.monto_origen:,.2f} {datos.moneda_origen.upper()}",
+            "tasa_aplicada": tasa,
+            "cuenta_destino": datos.cuenta_destino,
+            "monto_acreditado": f"{monto_convertido:,.2f} {datos.moneda_destino.upper()}",
+        }
+
+    except Exception as e:
+        conexion.rollback()
+        # Rollback en memoria
+        origen.saldo += datos.monto_origen
+        destino.saldo -= monto_convertido
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail=str(e)
+        )
+    finally:
+        conexion.close()
