@@ -8,3 +8,7 @@ env/
 
 # Archivos temporales de VS Code
 .vscode/
+
+# Bases de datos SQLite
+*.db
+*.sqlite3
